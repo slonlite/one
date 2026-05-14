@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Breitling Navitimer Concorde 3D</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #000;
+      font-family: Arial, sans-serif;
+    }
+
+    .bg {
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(circle at top, rgba(40,90,255,0.25), transparent 40%),
+        radial-gradient(circle at bottom right, rgba(255,140,0,0.18), transparent 40%),
+        #000;
+      animation: pulseBg 10s ease-in-out infinite alternate;
+    }
+
+    @keyframes pulseBg {
+      from {
+        filter: hue-rotate(0deg);
+        transform: scale(1);
+      }
+      to {
+        filter: hue-rotate(20deg);
+        transform: scale(1.05);
+      }
+    }
+
+    .scene {
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      perspective: 1800px;
+      position: relative;
+      z-index: 2;
+    }
+
+    .watch {
+      position: relative;
+      width: 78vmin;
+      height: 78vmin;
+      border-radius: 50%;
+      background: linear-gradient(145deg, #777, #111 35%, #000 70%);
+      border: 12px solid #666;
+      box-shadow:
+        0 0 120px rgba(255,140,0,0.25),
+        inset 0 0 30px rgba(255,255,255,0.15),
+        inset 0 0 80px rgba(0,0,0,0.9);
+      transform-style: preserve-3d;
+      animation: floatWatch 8s ease-in-out infinite;
+    }
+
+    @keyframes floatWatch {
+      0%,100% {
+        transform: rotateX(12deg) rotateY(-10deg) translateY(0px);
+      }
+      50% {
+        transform: rotateX(16deg) rotateY(10deg) translateY(-15px);
+      }
+    }
+
+    .bezel {
+      position: absolute;
+      inset: 1.5%;
+      border-radius: 50%;
+      border: 8px solid #222;
+      background: conic-gradient(#999, #222, #666, #222, #999);
+    }
+
+    .dial {
+      position: absolute;
+      inset: 8%;
+      border-radius: 50%;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 30% 20%, #4a8cff, #07101f 40%, #010204 70%);
+      border: 1px solid rgba(255,255,255,0.2);
+      box-shadow: inset 0 0 60px rgba(0,0,0,0.9);
+    }
+
+    .logo {
+      position: absolute;
+      top: 13%;
+      left: 50%;
+      transform: translateX(-50%);
+      text-align: center;
+      color: white;
+      z-index: 5;
+    }
+
+    .logo .main {
+      font-size: 2vmin;
+      letter-spacing: 0.4em;
+    }
+
+    .logo .sub {
+      font-size: 0.9vmin;
+      letter-spacing: 0.3em;
+      color: #ffb84d;
+      margin-top: 6px;
+    }
+
+    .marker {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 2px;
+      height: 100%;
+      transform-origin: center;
+    }
+
+    .marker::before {
+      content: '';
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      top: 7%;
+      width: 0.7vmin;
+      height: 4vmin;
+      border-radius: 20px;
+      background: linear-gradient(to bottom, white, #666);
+      box-shadow: 0 0 10px rgba(255,255,255,0.4);
+    }
+
+    .center {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 3.5vmin;
+      height: 3.5vmin;
+      border-radius: 50%;
+      background: linear-gradient(145deg, #fff, #444);
+      z-index: 20;
+      box-shadow: 0 0 20px rgba(255,255,255,0.35);
+    }
+
+    .hand {
+      position: absolute;
+      left: 50%;
+      bottom: 50%;
+      transform-origin: bottom center;
+      border-radius: 999px;
+    }
+
+    .hour {
+      width: 1.2vmin;
+      height: 18vmin;
+      background: linear-gradient(to top, #555, #fff);
+      box-shadow: 0 0 15px rgba(255,255,255,0.25);
+    }
+
+    .minute {
+      width: 0.8vmin;
+      height: 26vmin;
+      background: linear-gradient(to top, #8b5a00, #ffe2a8);
+      box-shadow: 0 0 18px rgba(255,180,0,0.45);
+    }
+
+    .second {
+      width: 0.22vmin;
+      height: 30vmin;
+      background: #ff2a2a;
+      box-shadow: 0 0 22px rgba(255,0,0,0.9);
+    }
+
+    .glass {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .glass::before {
+      content: '';
+      position: absolute;
+      top: 5%;
+      left: 8%;
+      width: 40%;
+      height: 16%;
+      background: rgba(255,255,255,0.12);
+      filter: blur(20px);
+      transform: rotate(-20deg);
+    }
+  </style>
+</head>
+<body>
+  <div class="bg"></div>
+
+  <div class="scene">
+    <div class="watch">
+      <div class="bezel"></div>
+
+      <div class="dial">
+        <div class="logo">
+          <div class="main">BREITLING</div>
+          <div class="sub">NAVITIMER CONCORDE</div>
+        </div>
+
+        <div id="markers"></div>
+
+        <div id="hour" class="hand hour"></div>
+        <div id="minute" class="hand minute"></div>
+        <div id="second" class="hand second"></div>
+
+        <div class="center"></div>
+        <div class="glass"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const markers = document.getElementById('markers');
+
+    for (let i = 0; i < 12; i++) {
+      const m = document.createElement('div');
+      m.className = 'marker';
+      m.style.transform = `translate(-50%, -50%) rotate(${i * 30}deg)`;
+      markers.appendChild(m);
+    }
+
+    const hourHand = document.getElementById('hour');
+    const minuteHand = document.getElementById('minute');
+    const secondHand = document.getElementById('second');
+
+    function updateClock() {
+      const now = new Date();
+
+      const seconds = now.getSeconds() + now.getMilliseconds() / 1000;
+      const minutes = now.getMinutes() + seconds / 60;
+      const hours = (now.getHours() % 12) + minutes / 60;
+
+      hourHand.style.transform = `translateX(-50%) rotate(${hours * 30}deg)`;
+      minuteHand.style.transform = `translateX(-50%) rotate(${minutes * 6}deg)`;
+      secondHand.style.transform = `translateX(-50%) rotate(${seconds * 6}deg)`;
+
+      requestAnimationFrame(updateClock);
+    }
+
+    updateClock();
+  </script>
+</body>
+</html>
