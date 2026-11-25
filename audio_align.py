@@ -81,8 +81,13 @@ def build_aligned_audio(
         settings:      Settings (для доступа к ffmpeg, max_speedup, gap_min_ms).
         on_progress:   опционально (доля 0..1, текст).
     """
-    assert len(segments) == len(ru_audio_paths), \
-        f"segments={len(segments)} vs audio={len(ru_audio_paths)}"
+    if len(segments) != len(ru_audio_paths):
+        raise RuntimeError(
+            f"Число текстовых сегментов ({len(segments)}) не совпадает "
+            f"с числом WAV-файлов ({len(ru_audio_paths)})."
+        )
+    if not segments:
+        raise RuntimeError("Нет сегментов для выравнивания русской озвучки.")
 
     if total_duration <= 0:
         # Если вдруг неизвестно — берём максимум по концам сегментов
@@ -113,14 +118,15 @@ def build_aligned_audio(
     # Сначала измеряем длину каждого дубляжа (без atempo, до наложения).
     dubbing_lengths_ms: list[int] = []
     for i, ru_path in enumerate(ru_audio_paths):
-        if not Path(ru_path).exists() or Path(ru_path).stat().st_size == 0:
-            dubbing_lengths_ms.append(0)
-            continue
+        if not Path(ru_path).exists() or Path(ru_path).stat().st_size <= 44:
+            raise RuntimeError(f"Отсутствует или пуст WAV русской озвучки для сегмента {i}: {ru_path}")
         try:
             seg_audio = AudioSegment.from_wav(ru_path)
-            dubbing_lengths_ms.append(len(seg_audio))
-        except Exception:
-            dubbing_lengths_ms.append(0)
+        except Exception as exc:
+            raise RuntimeError(f"Не удалось прочитать WAV сегмента {i}: {ru_path}: {exc}") from exc
+        if len(seg_audio) <= 0 or seg_audio.rms <= 0:
+            raise RuntimeError(f"WAV сегмента {i} содержит только тишину: {ru_path}")
+        dubbing_lengths_ms.append(len(seg_audio))
     log.info("Длины дубляжей (мс): %s", dubbing_lengths_ms)
 
     # Вычисляем позиции наложения:
@@ -245,6 +251,19 @@ def build_aligned_audio(
                 log.info("Сегмент %d: дубляж %d мс < слота %d мс (gap=%d мс останется в конце слота)",
                          i, seg_ms, slot_ms, slot_ms - seg_ms)
 
+            # Не выходим за длительность исходного аудио.
+            if start_ms >= canvas_ms:
+                log.warning("Сегмент %d начинается за концом аудио (%d >= %d мс), пропускаю",
+                            i, start_ms, canvas_ms)
+                continue
+            remaining_ms = canvas_ms - start_ms
+            if len(seg_audio) > remaining_ms:
+                log.warning("Сегмент %d обрезан по концу исходной дорожки: %d → %d мс",
+                            i, len(seg_audio), remaining_ms)
+                seg_audio = seg_audio[:remaining_ms]
+            if len(seg_audio) <= 0:
+                continue
+
             # Накладываем на canvas в позиции start_ms
             canvas = canvas.overlay(seg_audio, position=start_ms)
 
@@ -263,9 +282,13 @@ def build_aligned_audio(
         except Exception:
             pass
 
-    # Экспорт итогового аудио
+    # Экспорт итогового аудио; полностью тихий результат запрещён.
+    if len(canvas) <= 0 or canvas.rms <= 0:
+        raise RuntimeError("После выравнивания получилась полностью тихая русская дорожка.")
     canvas = canvas.set_frame_rate(SAMPLE_RATE).set_channels(1)
     canvas.export(output_wav, format="wav", parameters=["-ar", str(SAMPLE_RATE), "-ac", "1"])
+    if not Path(output_wav).exists() or Path(output_wav).stat().st_size <= 44:
+        raise RuntimeError("Не удалось создать итоговый WAV русской озвучки.")
     if on_progress:
         on_progress(1.0, "Аудио-выравнивание готово")
 
