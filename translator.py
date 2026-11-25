@@ -173,6 +173,9 @@ class EnRuTranslator:
         model_path = self._resolve_model_path()
         log.info("Загрузка переводчика %s (CPU)", model_path)
         self._tok = AutoTokenizer.from_pretrained(model_path)
+        # NLLB должен знать язык исходного текста до токенизации.
+        self._tok.src_lang = LANG_EN
+        log.info("NLLB: исходный язык=%s, целевой=%s", LANG_EN, LANG_RU)
 
         # v2.1: загружаем модель напрямую из safetensors без low_cpu_mem_usage.
         #
