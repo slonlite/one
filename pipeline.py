@@ -216,10 +216,16 @@ class Pipeline:
             # Перезаписываем сегменты с переводом, сохраняя соответствие 1:1.
             segs_ru: list[Segment] = []
             for s, ru in zip(segments, texts_ru):
-                segs_ru.append(Segment(start=s.start, end=s.end, text=(ru or "").strip(),
+                ru_text = (ru or "").strip()
+                if not any(ch.isalnum() for ch in ru_text):
+                    L(f"   Перевод пустой/пунктуационный, сегмент {s.start:.2f}-{s.end:.2f}s пропускаю")
+                    continue
+                segs_ru.append(Segment(start=s.start, end=s.end, text=ru_text,
                                        speaker_id=getattr(s, "speaker_id", None),
                                        gender=getattr(s, "gender", "male")))
-            L(f"   Переведено {len(segs_ru)} сегментов")
+            if not segs_ru:
+                raise RuntimeError("После фильтрации не осталось русских фраз для озвучки.")
+            L(f"   Переведено {len(segs_ru)} содержательных сегментов")
             for i, seg in enumerate(segs_ru):
                 L(f"   RU[{i}]: {len(seg.text)} симв.: {seg.text[:180]!r}")
             p(1.0, "Перевод готов", 0.55, 0.70)
