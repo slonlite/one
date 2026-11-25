@@ -160,9 +160,17 @@ class Pipeline:
                 audio_wav,
                 on_progress=lambda frac, msg: p(frac, msg, 0.02, 0.55),
             )
+            # Страховка на случай, если STT-движок вернул пустые/пунктуационные chunks.
+            segments = [seg for seg in segments if any(ch.isalnum() for ch in (seg.text or ""))]
             if not segments:
-                raise RuntimeError("Речь не распознана — возможно, в видео нет англоязычного аудио.")
-            L(f"   Распознано {len(segments)} сегментов")
+                raise RuntimeError(
+                    "Whisper не распознал содержательную речь. "
+                    "Проверьте исходную аудиодорожку, язык и модель STT. "
+                    "Перевод и MP4 не создавались."
+                )
+            L(f"   Распознано {len(segments)} содержательных сегментов")
+            for i, seg in enumerate(segments):
+                L(f"   STT[{i}]: {len(seg.text)} симв., {seg.start:.2f}-{seg.end:.2f}s: {seg.text[:180]!r}")
 
             # Не сдвигаем первый сегмент к нулю: вступление, заставка и музыка
             # должны сохранять исходную временную позицию.
@@ -192,13 +200,28 @@ class Pipeline:
             except Exception as e:
                 L(f"   Батч-перевод упал ({e}), перевожу построчно…")
                 texts_ru = [translator.translate(t) for t in texts_en]
-            # перезаписываем сегменты с переводом
+            if len(texts_ru) != len(segments):
+                raise RuntimeError(
+                    f"Переводчик вернул {len(texts_ru)} результатов для {len(segments)} сегментов."
+                )
+            valid_translations = [
+                (ru or "").strip() for ru in texts_ru
+                if any(ch.isalnum() for ch in (ru or ""))
+            ]
+            if not valid_translations:
+                raise RuntimeError(
+                    "Переводчик не вернул ни одного содержательного русского текста. "
+                    "Проверьте исходный текст и языковые настройки NLLB."
+                )
+            # Перезаписываем сегменты с переводом, сохраняя соответствие 1:1.
             segs_ru: list[Segment] = []
             for s, ru in zip(segments, texts_ru):
                 segs_ru.append(Segment(start=s.start, end=s.end, text=(ru or "").strip(),
                                        speaker_id=getattr(s, "speaker_id", None),
                                        gender=getattr(s, "gender", "male")))
             L(f"   Переведено {len(segs_ru)} сегментов")
+            for i, seg in enumerate(segs_ru):
+                L(f"   RU[{i}]: {len(seg.text)} симв.: {seg.text[:180]!r}")
             p(1.0, "Перевод готов", 0.55, 0.70)
 
             _check_cancel(cancel_event)
@@ -210,7 +233,19 @@ class Pipeline:
                 _check_cancel(cancel_event)
                 wav_out = str(tmp_dir / f"ru_{i:05d}.wav")
                 tts = self.tts(getattr(seg, "gender", "male"))
+                if not any(ch.isalnum() for ch in (seg.text or "")):
+                    raise RuntimeError(f"Сегмент RU[{i}] пустой или содержит только пунктуацию.")
                 tts.synthesize(seg.text, wav_out)
+                if not Path(wav_out).exists() or Path(wav_out).stat().st_size <= 44:
+                    raise RuntimeError(f"TTS не создал корректный WAV для сегмента {i}.")
+                from pydub import AudioSegment
+                tts_audio = AudioSegment.from_wav(wav_out)
+                if len(tts_audio) <= 0 or tts_audio.rms <= 0:
+                    raise RuntimeError(
+                        f"TTS создал пустую/тихую дорожку для сегмента {i} "
+                        f"(текст: {seg.text[:100]!r})."
+                    )
+                L(f"   TTS[{i}]: {len(seg.text)} симв., {len(tts_audio)} мс, RMS={tts_audio.rms}")
                 ru_audio_paths.append(wav_out)
                 p((i + 1) / len(segs_ru),
                   f"TTS: {i+1}/{len(segs_ru)}", 0.70, 0.90)
