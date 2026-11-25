@@ -57,9 +57,9 @@ def _resolve_device(device: str) -> str:
 
 
 class SileroTTS(BaseTTS):
-    """Silero TTS V5: русская модель v5_ru."""
+    """Silero TTS V5.6: русская модель v5_6_ru."""
 
-    MODEL_ID = "v5_ru"
+    MODEL_ID = "v5_6_ru"
     SUPPORTED_SAMPLE_RATES = (8000, 24000, 48000)
 
     def __init__(self, voice: str = "baya", sample_rate: int = 48000, device: str = "cpu"):
