@@ -124,36 +124,50 @@ class WhisperSTT:
 
         total = _audio_duration(audio_path)
 
+        language_names = {
+            "en": "english", "eng": "english",
+            "ru": "russian", "rus": "russian",
+        }
+        language = language_names.get((self.language or "").lower(), self.language)
         generate_kwargs = {
-            "language": self.language,
+            "language": language,
             "task": "transcribe",
             "num_beams": 5,
         }
+        log.info("Whisper: заданный язык распознавания=%s", language)
 
         # Загружаем WAV через librosa (не требует ffmpeg).
         log.info("Загрузка аудио через librosa: %s", audio_path)
         import librosa
         import numpy as np
         audio_np, sr = librosa.load(audio_path, sr=16000, mono=True)
-        log.info("Запуск Whisper pipeline (аудио: %.1f сек, %d Гц, device=%s)",
-                 len(audio_np) / sr, sr, self._effective_device)
+        if audio_np.size == 0:
+            raise RuntimeError("Whisper получил пустой аудиофайл.")
+        peak = float(np.max(np.abs(audio_np)))
+        rms = float(np.sqrt(np.mean(np.square(audio_np, dtype=np.float64))))
+        log.info("Запуск Whisper pipeline (аудио: %.1f сек, %d Гц, device=%s, peak=%.6f, rms=%.6f)",
+                 len(audio_np) / sr, sr, self._effective_device, peak, rms)
+        if peak < 1e-5 or rms < 1e-6:
+            raise RuntimeError("В извлечённой аудиодорожке почти нет сигнала. Проверьте исходное видео и FFmpeg.")
 
         # Для DirectML нужно передавать тензоры на device.
         # pipeline делает это автоматически, если device задан как строка.
         result = self._pipe({"raw": audio_np.astype(np.float32), "sampling_rate": sr},
                             generate_kwargs=generate_kwargs)
 
+        raw_text = (result.get("text") or "").strip()
         chunks = result.get("chunks") or []
-        if not chunks:
-            text = (result.get("text") or "").strip()
-            if text:
-                chunks = [{"text": text, "timestamp": [0.0, total]}]
+        log.info("Whisper result: top-level text=%r; chunks=%d", raw_text[:500], len(chunks))
+        if not chunks and raw_text:
+            chunks = [{"text": raw_text, "timestamp": [0.0, total]}]
 
         out: list[Segment] = []
         last_pct = -1.0
         for ch in chunks:
             text = (ch.get("text") or "").strip()
-            if not text:
+            # Не передаём переводчику пустые фрагменты и одну пунктуацию.
+            if not any(char.isalnum() for char in text):
+                log.warning("Whisper: пропускаю пустой/пунктуационный chunk: %r", text[:100])
                 continue
             ts = ch.get("timestamp") or [None, None]
             start = float(ts[0]) if ts[0] is not None else 0.0
@@ -167,6 +181,7 @@ class WhisperSTT:
                     last_pct = pct
                     on_progress(pct, f"STT: {len(out)} сегментов, "
                                      f"позиция {fmt_time(end)}/{fmt_time(total)}")
+        log.info("Whisper: принято %d содержательных сегментов", len(out))
         if on_progress:
             on_progress(1.0, f"STT готово: {len(out)} сегментов")
         return out, total
