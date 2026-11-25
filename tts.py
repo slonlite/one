@@ -101,9 +101,8 @@ class SileroTTS(BaseTTS):
 
     def synthesize(self, text: str, out_wav_path: str) -> None:
         text = (text or "").strip()
-        if not text:
-            self._write_silence(out_wav_path, 0.05, self.sample_rate)
-            return
+        if not text or not any(char.isalnum() for char in text):
+            raise ValueError("Silero получил пустой текст или одну пунктуацию.")
         self._ensure_loaded()
         import numpy as np
         import re
@@ -115,27 +114,41 @@ class SileroTTS(BaseTTS):
             chunk = chunk.strip()
             if not chunk or not re.search(r"[^\W_]", chunk, flags=re.UNICODE):
                 continue
-            audio = self._model.apply_tts(
-                text=chunk,
-                speaker=self.voice,
-                sample_rate=self.sample_rate,
-                put_accent=True,
-                put_yo=True,
-                put_stress_homo=True,
-                put_yo_homo=True,
-            )
+            try:
+                audio = self._model.apply_tts(
+                    text=chunk,
+                    speaker=self.voice,
+                    sample_rate=self.sample_rate,
+                    put_accent=True,
+                    put_yo=True,
+                    put_stress_homo=True,
+                    put_yo_homo=True,
+                )
+            except TypeError as exc:
+                # Разные релизы Silero отличаются набором необязательных аргументов.
+                if "unexpected keyword" not in str(exc) and "unexpected" not in str(exc):
+                    raise
+                log.warning("Silero API не принимает дополнительные параметры ударений; повторяю с базовыми аргументами: %s", exc)
+                audio = self._model.apply_tts(
+                    text=chunk,
+                    speaker=self.voice,
+                    sample_rate=self.sample_rate,
+                )
             if isinstance(audio, (list, tuple)):
                 audio = audio[0]
             arr = audio.detach().cpu().numpy() if hasattr(audio, "detach") else np.asarray(audio)
             arr = np.asarray(arr, dtype=np.float32).reshape(-1)
             log.info("Silero V5: часть %d символов → %d семплов", len(chunk), len(arr))
-            if arr.size:
+            if arr.size and np.all(np.isfinite(arr)) and float(np.max(np.abs(arr))) > 1e-6:
                 audio_arrays.append(arr)
+            else:
+                log.error("Silero вернул пустой/нулевой/некорректный массив для фрагмента: %r", chunk[:100])
 
         if not audio_arrays:
-            log.warning("Silero V5 вернул пустое аудио; записываю тишину")
-            self._write_silence(out_wav_path, 0.5, self.sample_rate)
-            return
+            raise RuntimeError(
+                "Silero не создал звуковой сигнал. WAV с тишиной не будет создан; "
+                "проверьте голос, версию модели и текст перевода."
+            )
 
         pause = np.zeros(int(0.3 * self.sample_rate), dtype=np.float32)
         parts = []
@@ -145,8 +158,11 @@ class SileroTTS(BaseTTS):
             parts.append(arr)
         full = np.clip(np.concatenate(parts), -1.0, 1.0)
         pcm = (full * 32767).astype("<i2")
+        if not pcm.size or int(np.max(np.abs(pcm))) == 0:
+            raise RuntimeError("Silero сформировал пустую или полностью нулевую аудиодорожку.")
         self._write_pcm(out_wav_path, pcm.tobytes(), self.sample_rate)
-        log.info("Silero V5: итоговая длина %d мс", int(len(full) * 1000 / self.sample_rate))
+        log.info("Silero V5: итоговая длина %d мс, peak=%.5f, voice=%s",
+                 int(len(full) * 1000 / self.sample_rate), float(np.max(np.abs(full))), self.voice)
 
     @staticmethod
     def _split_text(text: str, max_chars: int = 130) -> list[str]:
