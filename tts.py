@@ -30,20 +30,17 @@ class BaseTTS:
         raise NotImplementedError
 
 
-# Маппинг старых имён Silero в новые (silero 0.5.5+)
+# Совместимость старых настроек Tolmach с голосами Silero TTS V5.
+# В V5 ID модели (v5_ru) отделён от имени диктора.
 VOICE_MAP = {
-    "baya": "baya_v2",
-    "aidar": "aidar_v2",
-    "irina": "irina_v2",
-    "xeni": "baya_v2",
-    "random": "random",
-    "baya_v2": "baya_v2",
-    "aidar_v2": "aidar_v2",
-    "irina_v2": "irina_v2",
-    "natasha_v2": "natasha_v2",
-    "kseniya_v2": "kseniya_v2",
-    "ruslan_v2": "ruslan_v2",
-    "ru_v3": "ru_v3",
+    "baya": "baya", "baya_v2": "baya",
+    "aidar": "aidar", "aidar_v2": "aidar",
+    "eugene": "eugene", "ruslan_v2": "eugene",
+    "irina": "xenia", "irina_v2": "xenia",
+    "xeni": "xenia", "xenia": "xenia",
+    "natasha_v2": "baya",
+    "kseniya": "kseniya", "kseniya_v2": "kseniya",
+    "random": "baya", "ru_v3": "baya",
 }
 
 
@@ -60,17 +57,25 @@ def _resolve_device(device: str) -> str:
 
 
 class SileroTTS(BaseTTS):
-    """Silero через torch.hub.load (snakers4/silero-models GitHub repo).
+    """Silero TTS V5: русская модель v5_ru."""
 
-    Поддерживает все голоса v2: baya_v2, aidar_v2, irina_v2, natasha_v2,
-    kseniya_v2, ruslan_v2 + random. Кэш torch.hub — в models/torch_hub проекта.
-    """
+    MODEL_ID = "v5_ru"
+    SUPPORTED_SAMPLE_RATES = (8000, 24000, 48000)
 
-    def __init__(self, voice: str = "baya_v2", sample_rate: int = 16000, device: str = "cpu"):
-        self.voice = VOICE_MAP.get(voice, "baya_v2")
+    def __init__(self, voice: str = "baya", sample_rate: int = 48000, device: str = "cpu"):
+        requested = (voice or "baya").strip().lower()
+        self.voice = VOICE_MAP.get(requested, requested)
+        if self.voice not in {"aidar", "baya", "kseniya", "xenia", "eugene"}:
+            log.warning("Неизвестный голос Silero '%s'; использую baya", voice)
+            self.voice = "baya"
+        try:
+            sample_rate = int(sample_rate)
+        except (TypeError, ValueError):
+            sample_rate = 48000
+        if sample_rate not in self.SUPPORTED_SAMPLE_RATES:
+            log.warning("Silero V5: неподдерживаемая частота %s; использую 48000 Гц", sample_rate)
+            sample_rate = 48000
         self.sample_rate = sample_rate
-        # Silero всегда на CPU — DirectML не работает с torch.hub моделями
-        # (как и NLLB). TTS на CPU для коротких сегментов работает быстро.
         self.device = "cpu"
         self._model = None
 
@@ -78,154 +83,119 @@ class SileroTTS(BaseTTS):
         if self._model is not None:
             return
         import torch
-
-        # Отключить проверку SSL для urllib — models.silero.ai имеет истёкший
-        # сертификат. Это влияет только на urllib в этом процессе, не глобально.
-        # НО: torch.hub загружает с GitHub (валидный SSL), так что это нужно
-        # только для fallback на устаревший URL models.silero.ai.
-        import ssl
-        ssl._create_default_https_context = ssl._create_unverified_context
-        log.info("SSL проверка отключена для urllib (обход истёкшего сертификата silero.ai)")
-
-        # Кэш torch.hub в папку models/torch_hub проекта
         hub_dir = Path(__file__).resolve().parent.parent / "models" / "torch_hub"
         hub_dir.mkdir(parents=True, exist_ok=True)
         torch.hub.set_dir(str(hub_dir))
-        log.info("Кэш torch.hub: %s", hub_dir)
-
-        log.info("Загрузка Silero через torch.hub.load (snakers4/silero-models), CPU")
-        log.info("voice=%s, sr=%d", self.voice, self.sample_rate)
-
-        # torch.hub.load клонирует GitHub репозиторий и загружает модель
+        log.info("Загрузка Silero %s, speaker=%s, sr=%d (CPU)",
+                 self.MODEL_ID, self.voice, self.sample_rate)
+        # Здесь speaker — ID модели, а не имя голоса.
         model, _ = torch.hub.load(
             repo_or_dir="snakers4/silero-models",
             model="silero_tts",
             language="ru",
-            speaker=self.voice,
+            speaker=self.MODEL_ID,
             trust_repo=True,
         )
-
-        # Модель уже на CPU после загрузки. Не перемещаем на DirectML —
-        # torch.hub модели не совместимы с DirectML device.
         self._model = model
-        log.info("Silero готов на CPU")
+        log.info("Silero V5 готов на CPU")
 
     def synthesize(self, text: str, out_wav_path: str) -> None:
         text = (text or "").strip()
         if not text:
-            self._write_silence(out_wav_path, 0.05)
+            self._write_silence(out_wav_path, 0.05, self.sample_rate)
             return
         self._ensure_loaded()
         import numpy as np
+        import re
 
-        # Silero плохо работает с текстом длиннее 140 символов (выдаёт пустой аудио).
-        # Разделяем по предложениям и синтезируем каждую часть отдельно.
         chunks = self._split_text(text, max_chars=130)
-        log.info("TTS: текст %d символов → %d частей", len(text), len(chunks))
-
+        log.info("Silero V5: текст %d символов → %d частей", len(text), len(chunks))
         audio_arrays = []
         for chunk in chunks:
-            if not chunk.strip():
+            chunk = chunk.strip()
+            if not chunk or not re.search(r"[^\W_]", chunk, flags=re.UNICODE):
                 continue
-            try:
-                audio = self._model.apply_tts(
-                    text=chunk,
-                    speaker=self.voice,
-                    sample_rate=self.sample_rate,
-                    put_accent=True,
-                    put_yo=True,
-                )
-            except TypeError:
-                audio = self._model.apply_tts(
-                    texts=[chunk],
-                    sample_rate=self.sample_rate,
-                )
-            if isinstance(audio, list):
+            audio = self._model.apply_tts(
+                text=chunk,
+                speaker=self.voice,
+                sample_rate=self.sample_rate,
+                put_accent=True,
+                put_yo=True,
+                put_stress_homo=True,
+                put_yo_homo=True,
+            )
+            if isinstance(audio, (list, tuple)):
                 audio = audio[0]
-            arr = audio.detach().cpu().numpy() if hasattr(audio, 'detach') else np.asarray(audio)
-            if arr.ndim > 1:
-                arr = arr.reshape(-1)
-            log.info("TTS: часть %d символов → %d аудио-семплов", len(chunk), len(arr))
-            if len(arr) > 0:
+            arr = audio.detach().cpu().numpy() if hasattr(audio, "detach") else np.asarray(audio)
+            arr = np.asarray(arr, dtype=np.float32).reshape(-1)
+            log.info("Silero V5: часть %d символов → %d семплов", len(chunk), len(arr))
+            if arr.size:
                 audio_arrays.append(arr)
 
         if not audio_arrays:
-            log.warning("TTS: Silero вернул пустой аудио для всего текста, ставим тишину")
-            self._write_silence(out_wav_path, 0.5)
+            log.warning("Silero V5 вернул пустое аудио; записываю тишину")
+            self._write_silence(out_wav_path, 0.5, self.sample_rate)
             return
 
-        # Склеить все части с паузами между ними.
-        # 300 мс — естественная пауза между предложениями в русской речи.
-        # Без пауз Silero склеивает chunks без зазора — звучит "сплошным потоком".
-        # С паузами дубляж становится естественнее и длиннее (заполняет слот).
-        import numpy as np
-        PAUSE_BETWEEN_CHUNKS_SAMPLES = int(0.3 * self.sample_rate)  # 300 мс при 16 кГц = 4800 семплов
-        silence_chunk = np.zeros(PAUSE_BETWEEN_CHUNKS_SAMPLES, dtype=np.float32)
-        log.info("Silero: добавляю %d мс паузы между %d фрагментами",
-                 int(PAUSE_BETWEEN_CHUNKS_SAMPLES * 1000 / self.sample_rate),
-                 len(audio_arrays))
-
-        # Вставляем тишину между фрагментами (но не в начале и не в конце)
-        parts_with_pauses = []
+        pause = np.zeros(int(0.3 * self.sample_rate), dtype=np.float32)
+        parts = []
         for i, arr in enumerate(audio_arrays):
-            if i > 0:
-                parts_with_pauses.append(silence_chunk)
-            parts_with_pauses.append(arr)
-        full = np.concatenate(parts_with_pauses)
-        full = np.clip(full, -1.0, 1.0)
+            if i:
+                parts.append(pause)
+            parts.append(arr)
+        full = np.clip(np.concatenate(parts), -1.0, 1.0)
         pcm = (full * 32767).astype("<i2")
         self._write_pcm(out_wav_path, pcm.tobytes(), self.sample_rate)
-        log.info("Silero: итоговая длина %d мс",
-                 int(len(full) * 1000 / self.sample_rate))
+        log.info("Silero V5: итоговая длина %d мс", int(len(full) * 1000 / self.sample_rate))
 
     @staticmethod
     def _split_text(text: str, max_chars: int = 130) -> list[str]:
-        """Разделить длинный текст на части по предложениям.
-        Каждая часть не длиннее max_chars символов.
-        """
+        """Разбить длинный текст на части, не разрывая слова."""
+        import re
+        text = (text or "").strip()
+        if not text:
+            return []
         if len(text) <= max_chars:
             return [text]
-        # Простое разделение по точкам/восклицательным/вопросительным
-        import re
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        chunks = []
-        current = ""
-        for sent in sentences:
-            if len(current) + len(sent) + 1 <= max_chars:
-                current = (current + " " + sent).strip() if current else sent
-            else:
-                if current:
-                    chunks.append(current)
-                # Если одно предложение длиннее max_chars — режем по запятым или словам
-                if len(sent) > max_chars:
-                    parts = re.split(r'(?<=[,;])\s+', sent)
-                    sub = ""
-                    for p in parts:
-                        if len(sub) + len(p) + 1 <= max_chars:
-                            sub = (sub + " " + p).strip() if sub else p
-                        else:
-                            if sub:
-                                chunks.append(sub)
-                            # Если часть всё ещё длинная — режем по словам
-                            if len(p) > max_chars:
-                                words = p.split()
-                                w = ""
-                                for word in words:
-                                    if len(w) + len(word) + 1 <= max_chars:
-                                        w = (w + " " + word).strip() if w else word
-                                    else:
-                                        if w:
-                                            chunks.append(w)
-                                        w = word
-                                if w:
-                                    sub = w
-                            else:
-                                sub = p
-                    if sub:
-                        chunks.append(sub)
-                    current = ""
+        chunks, current = [], ""
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            if len(sentence) <= max_chars:
+                candidate = (current + " " + sentence).strip() if current else sentence
+                if len(candidate) <= max_chars:
+                    current = candidate
                 else:
-                    current = sent
+                    if current:
+                        chunks.append(current)
+                    current = sentence
+                continue
+            if current:
+                chunks.append(current)
+                current = ""
+            for piece in re.split(r"(?<=[,;:])\s+", sentence):
+                piece = piece.strip()
+                if not piece:
+                    continue
+                if len(piece) > max_chars:
+                    for word in piece.split():
+                        candidate = (current + " " + word).strip() if current else word
+                        if len(candidate) <= max_chars:
+                            current = candidate
+                        else:
+                            if current:
+                                chunks.append(current)
+                            current = word
+                else:
+                    candidate = (current + " " + piece).strip() if current else piece
+                    if len(candidate) <= max_chars:
+                        current = candidate
+                    else:
+                        if current:
+                            chunks.append(current)
+                        current = piece
         if current:
             chunks.append(current)
         return chunks
@@ -239,7 +209,7 @@ class SileroTTS(BaseTTS):
             w.writeframes(pcm_bytes)
 
     @staticmethod
-    def _write_silence(path, duration_sec, sample_rate=16000):
+    def _write_silence(path, duration_sec, sample_rate=48000):
         n = int(duration_sec * sample_rate)
         with wave.open(path, "wb") as w:
             w.setnchannels(1)
@@ -753,7 +723,7 @@ def make_tts(settings, gender: str | None = None) -> BaseTTS:
                         "Падаю на Silero. Смените движок в GUI на silero/piper.", e)
             return SileroTTS(
                 voice=getattr(settings, f'silero_{gender}_voice', getattr(settings, 'silero_voice', 'baya_v2')),
-                sample_rate=getattr(settings, 'silero_sample_rate', 16000),
+                sample_rate=getattr(settings, 'silero_sample_rate', 48000),
                 device=dev,
             )
 
@@ -797,14 +767,14 @@ def make_tts(settings, gender: str | None = None) -> BaseTTS:
         )
         return SileroTTS(
             voice=getattr(settings, f'silero_{gender}_voice', getattr(settings, 'silero_voice', 'baya_v2')),
-            sample_rate=getattr(settings, 'silero_sample_rate', 16000),
+            sample_rate=getattr(settings, 'silero_sample_rate', 48000),
             device=dev,
         )
 
     # По умолчанию — Silero
     return SileroTTS(
         voice=getattr(settings, f'silero_{gender}_voice', getattr(settings, 'silero_voice', 'baya_v2')),
-        sample_rate=getattr(settings, 'silero_sample_rate', 16000),
+        sample_rate=getattr(settings, 'silero_sample_rate', 48000),
         device=dev,
     )
 
